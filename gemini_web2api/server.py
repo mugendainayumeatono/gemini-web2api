@@ -12,6 +12,7 @@ from .gemini import generate, generate_stream, log
 from .tools import messages_to_prompt, parse_tool_calls, google_contents_to_prompt, parse_google_function_calls
 from .multimodal import detect_image_mime, fetch_image_bytes, upload_image
 from .audit import record_audit_log
+from .rate_limiter import rate_limiter
 from . import __version__
 
 
@@ -52,6 +53,11 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def _audit(self, model: str, request_data: any, response_data: any):
         client_ip = self.client_address[0] if self.client_address else "-"
         record_audit_log(client_ip, model, request_data, response_data)
+
+    def _throttle(self):
+        wait_time = rate_limiter.acquire()
+        if wait_time > 0 and CONFIG.get("log_requests", True):
+            log(f"Rate limit: delayed {wait_time:.2f}s")
 
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -202,6 +208,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self._audit(model_name, req, err_resp)
             return
 
+        self._throttle()
+
         stream = req.get("stream", False)
         cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         try:
@@ -292,8 +300,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text or "")//4,
                           "total_tokens": (len(prompt)+len(text or ""))//4},
             }
-            self.send_json(resp)
             self._audit(model_name, req, resp)
+            self.send_json(resp)
 
     # ─── /v1/responses (Codex CLI) ───────────────────────────────────────────
 
@@ -362,6 +370,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.send_json(err_resp, 400)
             self._audit(model_name, req, err_resp)
             return
+
+        self._throttle()
 
         try:
             file_refs = _upload_images(images)
@@ -528,8 +538,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             resp = {"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
                     "model": model_name, "output": output,
                     "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4, "total_tokens": (len(prompt)+len(text or ""))//4}}
-            self.send_json(resp)
             self._audit(model_name, req, resp)
+            self.send_json(resp)
 
     # ─── /v1beta/models (Google Gemini CLI) ──────────────────────────────────
 
@@ -558,6 +568,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.send_json(err_resp, 400)
             self._audit(model_name, req, err_resp)
             return
+
+        self._throttle()
 
         try:
             file_refs = _upload_images(images)
@@ -651,8 +663,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             self._audit(model_name, req, response_obj)
         else:
-            self.send_json(response_obj)
             self._audit(model_name, req, response_obj)
+            self.send_json(response_obj)
 
 
 class ThreadedServer(ThreadingMixIn, HTTPServer):

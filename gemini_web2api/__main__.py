@@ -41,6 +41,16 @@ def main():
     print(f"  Streaming: {'httpx (true streaming)' if HAS_HTTPX else 'urllib (buffered)'}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")
     print(f"  Audit log: {'enabled' if CONFIG.get('audit_log', False) else 'disabled'}")
+    rate = CONFIG.get("rate_limit")
+    try:
+        rate_val = float(rate) if rate is not None else 0.0
+    except (ValueError, TypeError):
+        rate_val = 0.0
+    if rate_val > 0:
+        jitter_str = " (±20% jitter)" if CONFIG.get("rate_limit_jitter", False) else ""
+        print(f"  Rate limit: {rate_val} req/s{jitter_str}")
+    else:
+        print(f"  Rate limit: disabled")
     print()
     try:
         server.serve_forever()

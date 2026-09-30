@@ -2,6 +2,7 @@ import http.client
 import base64
 import json
 import threading
+import time
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs
@@ -14,6 +15,7 @@ from gemini_web2api.gemini import _build_payload
 from gemini_web2api.server import GeminiHandler, ThreadedServer
 from gemini_web2api.tools import google_contents_to_prompt, messages_to_prompt
 from gemini_web2api.audit import get_audit_log_path, record_audit_log
+from gemini_web2api.rate_limiter import calculate_interval, RateLimiter, rate_limiter
 
 
 def _decode_payload(payload):
@@ -541,6 +543,17 @@ class StreamingEndpointTests(unittest.TestCase):
             self.assertEqual(entry["request"]["contents"][0]["parts"][0]["text"], "google prompt")
             self.assertEqual(entry["response"]["candidates"][0]["content"]["parts"][0]["text"], "google content")
 
+    @mock.patch("gemini_web2api.server.generate", return_value="pacing response")
+    def test_server_pacing_rate_limit(self, _generate):
+        rate_limiter.reset()
+        CONFIG["rate_limit"] = 50.0  # 0.02s
+        CONFIG["rate_limit_jitter"] = False
+        t0 = time.time()
+        self.post_json("/v1/chat/completions", {"model": "gemini-3.6-flash", "messages": [{"role": "user", "content": "1"}]})
+        self.post_json("/v1/chat/completions", {"model": "gemini-3.6-flash", "messages": [{"role": "user", "content": "2"}]})
+        elapsed = time.time() - t0
+        self.assertGreaterEqual(elapsed, 0.015)
+
 
 class CookieAuthSyncTests(unittest.TestCase):
     def setUp(self):
@@ -753,6 +766,111 @@ class AuditSystemTests(unittest.TestCase):
         self.assertTrue(logged)
         files = os.listdir(self.temp_dir.name)
         self.assertTrue(len(files) >= 1)
+
+
+class RateLimiterTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = dict(CONFIG)
+        rate_limiter.reset()
+
+    def tearDown(self):
+        CONFIG.clear()
+        CONFIG.update(self.original_config)
+        rate_limiter.reset()
+
+    def test_default_config_rate_limit(self):
+        self.assertIn("rate_limit", DEFAULT_CONFIG)
+        self.assertIsNone(DEFAULT_CONFIG["rate_limit"])
+        self.assertIn("rate_limit_jitter", DEFAULT_CONFIG)
+        self.assertIs(DEFAULT_CONFIG["rate_limit_jitter"], False)
+
+    def test_calculate_interval_greater_than_one(self):
+        # > 1 represents requests per second
+        self.assertAlmostEqual(calculate_interval(2.0, jitter=False), 0.5)
+        self.assertAlmostEqual(calculate_interval(5.0, jitter=False), 0.2)
+        self.assertAlmostEqual(calculate_interval(10.0, jitter=False), 0.1)
+
+    def test_calculate_interval_fractional_between_zero_and_one(self):
+        # 0 < x < 1 represents 1 request every (1/x) seconds
+        self.assertAlmostEqual(calculate_interval(0.5, jitter=False), 2.0)
+        self.assertAlmostEqual(calculate_interval(0.2, jitter=False), 5.0)
+        self.assertAlmostEqual(calculate_interval(0.1, jitter=False), 10.0)
+
+    def test_calculate_interval_disabled(self):
+        self.assertEqual(calculate_interval(0, jitter=False), 0.0)
+        self.assertEqual(calculate_interval(-1.0, jitter=False), 0.0)
+        self.assertEqual(calculate_interval(None, jitter=False), 0.0)
+
+    def test_calculate_interval_with_jitter_range(self):
+        # Random deviation within +/- 20% ([0.8, 1.2])
+        base_rate = 2.0  # base interval = 0.5s -> [0.4s, 0.6s]
+        for _ in range(50):
+            interval = calculate_interval(base_rate, jitter=True)
+            self.assertGreaterEqual(interval, 0.40 - 1e-6)
+            self.assertLessEqual(interval, 0.60 + 1e-6)
+
+        frac_rate = 0.5  # base interval = 2.0s -> [1.6s, 2.4s]
+        for _ in range(50):
+            interval = calculate_interval(frac_rate, jitter=True)
+            self.assertGreaterEqual(interval, 1.60 - 1e-6)
+            self.assertLessEqual(interval, 2.40 + 1e-6)
+
+    def test_acquire_disabled_by_default(self):
+        CONFIG["rate_limit"] = None
+        CONFIG["rate_limit_jitter"] = False
+        wait_time = rate_limiter.acquire()
+        self.assertEqual(wait_time, 0.0)
+
+    def test_acquire_pacing(self):
+        rl = RateLimiter()
+        # 50 req/s -> 0.02s interval
+        wait1 = rl.acquire(rate=50.0, jitter=False)
+        self.assertEqual(wait1, 0.0)
+
+        # Immediate second call should wait ~0.02s
+        wait2 = rl.acquire(rate=50.0, jitter=False)
+        self.assertGreater(wait2, 0.01)
+        self.assertLessEqual(wait2, 0.035)
+
+    def test_rate_limiter_thread_safety(self):
+        rl = RateLimiter()
+        num_threads = 5
+        # 100 req/s -> 0.01s interval
+        waits = []
+        lock = threading.Lock()
+
+        def worker():
+            w = rl.acquire(rate=100.0, jitter=False)
+            with lock:
+                waits.append(w)
+
+        threads = [threading.Thread(target=worker) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(waits), num_threads)
+        self.assertTrue(any(w == 0.0 for w in waits))
+        self.assertTrue(any(w > 0.0 for w in waits))
+
+    def test_standalone_parity_for_rate_limiter(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("standalone_rate", "gemini_web2api.py")
+        standalone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(standalone)
+
+        self.assertIn("rate_limit", standalone.DEFAULT_CONFIG)
+        self.assertIsNone(standalone.DEFAULT_CONFIG["rate_limit"])
+        self.assertIn("rate_limit_jitter", standalone.DEFAULT_CONFIG)
+        self.assertIs(standalone.DEFAULT_CONFIG["rate_limit_jitter"], False)
+        self.assertTrue(callable(getattr(standalone, "calculate_interval", None)))
+        self.assertTrue(hasattr(standalone, "RateLimiter"))
+        self.assertTrue(hasattr(standalone, "rate_limiter"))
+
+        # Test standalone rate calculation
+        self.assertAlmostEqual(standalone.calculate_interval(2.0, False), 0.5)
+        self.assertAlmostEqual(standalone.calculate_interval(0.5, False), 2.0)
 
 
 if __name__ == "__main__":

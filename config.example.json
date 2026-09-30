@@ -15,5 +15,7 @@
   "proxy": null,
   "log_requests": true,
   "temporary_chats": false,
-  "audit_log": false
+  "audit_log": false,
+  "rate_limit": null,
+  "rate_limit_jitter": false
 }

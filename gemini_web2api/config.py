@@ -19,6 +19,8 @@ DEFAULT_CONFIG = {
     "api_keys": [],
     "temporary_chats": False,
     "audit_log": False,
+    "rate_limit": None,
+    "rate_limit_jitter": False,
 }
 
 CONFIG = dict(DEFAULT_CONFIG)

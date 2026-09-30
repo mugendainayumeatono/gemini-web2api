@@ -35,6 +35,7 @@ import base64
 import binascii
 import tempfile
 import threading
+import random
 from datetime import datetime
 from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -66,6 +67,8 @@ DEFAULT_CONFIG = {
     "api_keys": [],
     "temporary_chats": False,
     "audit_log": False,
+    "rate_limit": None,
+    "rate_limit_jitter": False,
 }
 
 CONFIG = dict(DEFAULT_CONFIG)
@@ -190,6 +193,69 @@ def record_audit_log(
             sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] Audit log error: {e}\n")
             sys.stderr.flush()
         return False
+
+
+def calculate_interval(rate: float, jitter: bool = False) -> float:
+    """Calculate the required interval in seconds for the given rate (requests/sec).
+
+    If rate <= 0, returns 0.0.
+    If jitter is True, applies a random deviation within +/- 20% ([0.8, 1.2]).
+    """
+    if not rate or rate <= 0:
+        return 0.0
+    base_interval = 1.0 / rate
+    if jitter:
+        return base_interval * random.uniform(0.8, 1.2)
+    return base_interval
+
+
+class RateLimiter:
+    """Thread-safe rate limiter supporting delay-based pacing and random jitter."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._next_allowed_time = 0.0
+
+    def reset(self):
+        """Reset the rate limiter state."""
+        with self._lock:
+            self._next_allowed_time = 0.0
+
+    def acquire(self, rate: Optional[float] = None, jitter: Optional[bool] = None) -> float:
+        """Wait if necessary to comply with the rate limit.
+
+        Returns the duration waited in seconds (0.0 if no wait was needed).
+        """
+        if rate is None:
+            raw_rate = CONFIG.get("rate_limit")
+            if raw_rate is None:
+                return 0.0
+            try:
+                rate = float(raw_rate)
+            except (ValueError, TypeError):
+                return 0.0
+
+        if rate <= 0:
+            return 0.0
+
+        if jitter is None:
+            jitter = bool(CONFIG.get("rate_limit_jitter", False))
+
+        interval = calculate_interval(rate, jitter)
+
+        with self._lock:
+            now = time.monotonic()
+            target_time = max(now, self._next_allowed_time)
+            self._next_allowed_time = target_time + interval
+            wait_time = target_time - now
+
+        if wait_time > 0:
+            time.sleep(wait_time)
+            return wait_time
+        return 0.0
+
+
+rate_limiter = RateLimiter()
 
 
 def load_cookie() -> tuple:
@@ -732,6 +798,11 @@ class GeminiHandler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
+    def _throttle(self):
+        wait_time = rate_limiter.acquire()
+        if wait_time > 0 and CONFIG.get("log_requests", True):
+            log(f"Rate limit: delayed {wait_time:.2f}s")
+
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
@@ -882,6 +953,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self._audit(model_name, req, err_resp)
             return
 
+        self._throttle()
+
         stream = req.get("stream", False)
         cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         try:
@@ -971,8 +1044,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text or "")//4,
                           "total_tokens": (len(prompt)+len(text or ""))//4},
             }
-            self.send_json(resp)
             self._audit(model_name, req, resp)
+            self.send_json(resp)
 
     def handle_responses(self, body: bytes):
         """OpenAI Responses API for Codex CLI compatibility."""
@@ -1039,6 +1112,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self._audit(model_name, req, err_resp)
             return
 
+        self._throttle()
+
         try:
             file_refs = upload_images(images)
             text, tool_calls = self._call_gemini(prompt, model_id, think_mode, tools, file_refs)
@@ -1102,8 +1177,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             resp = {"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
                     "model": model_name, "output": output,
                     "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4, "total_tokens": (len(prompt)+len(text or ""))//4}}
-            self.send_json(resp)
             self._audit(model_name, req, resp)
+            self.send_json(resp)
 
 
     # ─── Google Native API (Gemini CLI compatible) ────────────────────────────
@@ -1156,6 +1231,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self._audit(model_name, req, err_resp)
             return
 
+        self._throttle()
+
         try:
             file_refs = upload_images(images)
             text, _ = self._call_gemini(prompt, model_id, think_mode, None, file_refs)
@@ -1191,8 +1268,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             self._audit(model_name, req, response_obj)
         else:
-            self.send_json(response_obj)
             self._audit(model_name, req, response_obj)
+            self.send_json(response_obj)
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -1339,6 +1416,16 @@ def main():
     print(f"  BL:        {CONFIG['gemini_bl']}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")
     print(f"  Audit log: {'enabled' if CONFIG.get('audit_log', False) else 'disabled'}")
+    rate = CONFIG.get("rate_limit")
+    try:
+        rate_val = float(rate) if rate is not None else 0.0
+    except (ValueError, TypeError):
+        rate_val = 0.0
+    if rate_val > 0:
+        jitter_str = " (±20% jitter)" if CONFIG.get("rate_limit_jitter", False) else ""
+        print(f"  Rate limit: {rate_val} req/s{jitter_str}")
+    else:
+        print(f"  Rate limit: disabled")
     print()
     try:
         server.serve_forever()
