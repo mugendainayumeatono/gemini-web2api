@@ -40,6 +40,7 @@ def main():
     print(f"  Proxy:     {CONFIG.get('proxy') or 'system env'}")
     print(f"  Streaming: {'httpx (true streaming)' if HAS_HTTPX else 'urllib (buffered)'}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")
+    print(f"  Audit log: {'enabled' if CONFIG.get('audit_log', False) else 'disabled'}")
     print()
     try:
         server.serve_forever()

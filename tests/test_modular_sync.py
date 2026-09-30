@@ -8,10 +8,12 @@ from urllib.parse import parse_qs
 
 import tempfile
 import os
+from datetime import datetime
 from gemini_web2api.config import CONFIG, DEFAULT_CONFIG, load_config, sync_cookie_auth_to_config
 from gemini_web2api.gemini import _build_payload
 from gemini_web2api.server import GeminiHandler, ThreadedServer
 from gemini_web2api.tools import google_contents_to_prompt, messages_to_prompt
+from gemini_web2api.audit import get_audit_log_path, record_audit_log
 
 
 def _decode_payload(payload):
@@ -442,6 +444,103 @@ class StreamingEndpointTests(unittest.TestCase):
         self.assertEqual(events[4][1]["arguments"], '{"city":"Shanghai"}')
         self.assertEqual(events[-1][1]["response"]["output"][0]["name"], "get_weather")
 
+    @mock.patch("gemini_web2api.server.generate", return_value="audit test response")
+    def test_chat_audit_log_when_enabled(self, _generate):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            CONFIG["audit_log"] = True
+            CONFIG["audit_log_dir"] = temp_dir
+
+            status, _, _ = self.post_json(
+                "/v1/chat/completions",
+                {
+                    "model": "gemini-3.6-flash",
+                    "messages": [{"role": "user", "content": "hello audit"}],
+                },
+            )
+            self.assertEqual(status, 200)
+
+            files = os.listdir(temp_dir)
+            self.assertEqual(len(files), 1)
+            with open(os.path.join(temp_dir, files[0]), "r", encoding="utf-8") as f:
+                lines = [json.loads(line) for line in f if line.strip()]
+
+            self.assertEqual(len(lines), 1)
+            entry = lines[0]
+            self.assertEqual(entry["model"], "gemini-3.6-flash")
+            self.assertEqual(entry["client_ip"], "127.0.0.1")
+            self.assertIn("timestamp", entry)
+            self.assertEqual(entry["request"]["messages"][0]["content"], "hello audit")
+            self.assertEqual(entry["response"]["choices"][0]["message"]["content"], "audit test response")
+
+    @mock.patch("gemini_web2api.server.generate", return_value="audit test response")
+    def test_audit_log_not_written_when_disabled(self, _generate):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            CONFIG["audit_log"] = False
+            CONFIG["audit_log_dir"] = temp_dir
+
+            status, _, _ = self.post_json(
+                "/v1/chat/completions",
+                {
+                    "model": "gemini-3.6-flash",
+                    "messages": [{"role": "user", "content": "hello audit disabled"}],
+                },
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(len(os.listdir(temp_dir)), 0)
+
+    @mock.patch("gemini_web2api.server.generate_stream")
+    def test_chat_streaming_audit_log_records_full_response(self, generate_stream):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            CONFIG["audit_log"] = True
+            CONFIG["audit_log_dir"] = temp_dir
+            generate_stream.return_value = iter(["streamed ", "content"])
+
+            status, _, _ = self.post_json(
+                "/v1/chat/completions",
+                {
+                    "model": "gemini-3.6-flash",
+                    "messages": [{"role": "user", "content": "streaming audit"}],
+                    "stream": True,
+                },
+            )
+            self.assertEqual(status, 200)
+
+            files = os.listdir(temp_dir)
+            self.assertEqual(len(files), 1)
+            with open(os.path.join(temp_dir, files[0]), "r", encoding="utf-8") as f:
+                lines = [json.loads(line) for line in f if line.strip()]
+
+            self.assertEqual(len(lines), 1)
+            entry = lines[0]
+            self.assertEqual(entry["model"], "gemini-3.6-flash")
+            self.assertEqual(entry["client_ip"], "127.0.0.1")
+            self.assertEqual(entry["request"]["messages"][0]["content"], "streaming audit")
+            self.assertEqual(entry["response"]["choices"][0]["message"]["content"], "streamed content")
+            self.assertEqual(entry["response"]["choices"][0]["finish_reason"], "stop")
+
+    @mock.patch("gemini_web2api.server.generate", return_value="google content")
+    def test_google_generate_content_records_audit_log(self, _generate):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            CONFIG["audit_log"] = True
+            CONFIG["audit_log_dir"] = temp_dir
+
+            status, _, _ = self.post_json(
+                "/v1beta/models/gemini-3.6-flash:generateContent",
+                {
+                    "contents": [{"parts": [{"text": "google prompt"}]}],
+                },
+            )
+            self.assertEqual(status, 200)
+
+            files = os.listdir(temp_dir)
+            self.assertEqual(len(files), 1)
+            with open(os.path.join(temp_dir, files[0]), "r", encoding="utf-8") as f:
+                entry = json.loads(f.readline())
+
+            self.assertEqual(entry["model"], "gemini-3.6-flash")
+            self.assertEqual(entry["request"]["contents"][0]["parts"][0]["text"], "google prompt")
+            self.assertEqual(entry["response"]["candidates"][0]["content"]["parts"][0]["text"], "google content")
+
 
 class CookieAuthSyncTests(unittest.TestCase):
     def setUp(self):
@@ -534,6 +633,126 @@ class CookieAuthSyncTests(unittest.TestCase):
         self.assertEqual(saved_config["auth_user"], "3")
         self.assertEqual(saved_config["xsrf_token"], "custom_xsrf")
         self.assertEqual(saved_config["cookie_file"], cookie_path)
+
+
+class AuditSystemTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = dict(CONFIG)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        CONFIG["audit_log_dir"] = self.temp_dir.name
+
+    def tearDown(self):
+        CONFIG.clear()
+        CONFIG.update(self.original_config)
+        self.temp_dir.cleanup()
+
+    def test_default_config_audit_log_disabled(self):
+        self.assertIn("audit_log", DEFAULT_CONFIG)
+        self.assertIs(DEFAULT_CONFIG["audit_log"], False)
+
+    def test_audit_log_rotation_naming(self):
+        dt1 = datetime(2026, 9, 30, 10, 0, 0)
+        dt2 = datetime(2026, 10, 1, 10, 0, 0)
+        path1 = get_audit_log_path(self.temp_dir.name, dt1)
+        path2 = get_audit_log_path(self.temp_dir.name, dt2)
+
+        self.assertEqual(os.path.basename(path1), "audit_2026-09-30.log")
+        self.assertEqual(os.path.basename(path2), "audit_2026-10-01.log")
+
+    def test_record_audit_log_when_disabled(self):
+        CONFIG["audit_log"] = False
+        logged = record_audit_log("127.0.0.1", "gemini-3.8-flash", {"q": "hi"}, {"a": "hello"}, self.temp_dir.name)
+        self.assertFalse(logged)
+        self.assertEqual(len(os.listdir(self.temp_dir.name)), 0)
+
+    def test_record_audit_log_when_enabled(self):
+        CONFIG["audit_log"] = True
+        req_obj = {"model": "gemini-3.8-flash", "messages": [{"role": "user", "content": "你好，世界"}]}
+        resp_obj = {"choices": [{"message": {"role": "assistant", "content": "你好！有什么我可以帮你的？"}}]}
+
+        logged = record_audit_log("192.168.1.100", "gemini-3.8-flash", req_obj, resp_obj, self.temp_dir.name)
+        self.assertTrue(logged)
+
+        files = os.listdir(self.temp_dir.name)
+        self.assertEqual(len(files), 1)
+        self.assertTrue(files[0].startswith("audit_") and files[0].endswith(".log"))
+
+        with open(os.path.join(self.temp_dir.name, files[0]), "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(lines), 1)
+        entry = lines[0]
+        self.assertEqual(entry["client_ip"], "192.168.1.100")
+        self.assertEqual(entry["model"], "gemini-3.8-flash")
+        self.assertIn("timestamp", entry)
+        self.assertEqual(entry["request"], req_obj)
+        self.assertEqual(entry["response"], resp_obj)
+
+    def test_record_audit_log_normalizes_bytes_json(self):
+        CONFIG["audit_log"] = True
+        req_bytes = json.dumps({"test": "request"}).encode("utf-8")
+        resp_bytes = json.dumps({"test": "response"}).encode("utf-8")
+
+        logged = record_audit_log("127.0.0.1", "gemini-3.8-flash", req_bytes, resp_bytes, self.temp_dir.name)
+        self.assertTrue(logged)
+
+        files = os.listdir(self.temp_dir.name)
+        with open(os.path.join(self.temp_dir.name, files[0]), "r", encoding="utf-8") as f:
+            entry = json.loads(f.readline())
+
+        self.assertEqual(entry["request"], {"test": "request"})
+        self.assertEqual(entry["response"], {"test": "response"})
+
+    def test_audit_log_thread_safety(self):
+        CONFIG["audit_log"] = True
+        num_threads = 10
+        writes_per_thread = 20
+
+        def worker(tid):
+            for i in range(writes_per_thread):
+                record_audit_log(
+                    f"10.0.0.{tid}",
+                    "gemini-3.8-flash",
+                    {"thread": tid, "seq": i},
+                    {"thread": tid, "reply": i},
+                    self.temp_dir.name,
+                )
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        files = os.listdir(self.temp_dir.name)
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(self.temp_dir.name, files[0]), "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(lines), num_threads * writes_per_thread)
+
+    def test_standalone_parity_for_audit(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("standalone", "gemini_web2api.py")
+        standalone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(standalone)
+
+        self.assertIn("audit_log", standalone.DEFAULT_CONFIG)
+        self.assertIs(standalone.DEFAULT_CONFIG["audit_log"], False)
+        self.assertTrue(callable(getattr(standalone, "record_audit_log", None)))
+        self.assertTrue(callable(getattr(standalone, "get_audit_log_path", None)))
+
+        standalone.CONFIG["audit_log"] = True
+        logged = standalone.record_audit_log(
+            "127.0.0.1",
+            "gemini-3.8-flash",
+            {"msg": "hi"},
+            {"reply": "hello"},
+            self.temp_dir.name,
+        )
+        self.assertTrue(logged)
+        files = os.listdir(self.temp_dir.name)
+        self.assertTrue(len(files) >= 1)
 
 
 if __name__ == "__main__":

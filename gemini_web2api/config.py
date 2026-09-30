@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "proxy": None,
     "api_keys": [],
     "temporary_chats": False,
+    "audit_log": False,
 }
 
 CONFIG = dict(DEFAULT_CONFIG)

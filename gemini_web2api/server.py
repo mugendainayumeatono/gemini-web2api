@@ -11,6 +11,7 @@ from .models import MODELS, resolve_model
 from .gemini import generate, generate_stream, log
 from .tools import messages_to_prompt, parse_tool_calls, google_contents_to_prompt, parse_google_function_calls
 from .multimodal import detect_image_mime, fetch_image_bytes, upload_image
+from .audit import record_audit_log
 from . import __version__
 
 
@@ -47,6 +48,10 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         client_ip = self.client_address[0] if self.client_address else "-"
         log(f"{client_ip} {fmt % args}")
+
+    def _audit(self, model: str, request_data: any, response_data: any):
+        client_ip = self.client_address[0] if self.client_address else "-"
+        record_audit_log(client_ip, model, request_data, response_data)
 
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -176,19 +181,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def _handle_chat(self, body: bytes):
         req = self._parse_body(body)
         if req is None:
-            self.send_json({"error": {"message": "invalid JSON"}}, 400)
+            err = {"error": {"message": "invalid JSON"}}
+            self.send_json(err, 400)
+            self._audit("-", body, err)
             return
         model_name, model_id, think_mode, err, extra_fields = resolve_model(
             req.get("model", CONFIG["default_model"]))
         if err:
-            self.send_json({"error": {"message": err}}, 400)
+            err_resp = {"error": {"message": err}}
+            self.send_json(err_resp, 400)
+            self._audit(req.get("model", "-"), req, err_resp)
             return
 
         tools = req.get("tools")
         tool_choice = req.get("tool_choice", "auto")
         prompt, images = messages_to_prompt(req.get("messages", []), tools, tool_choice)
         if not prompt.strip():
-            self.send_json({"error": {"message": "empty prompt"}}, 400)
+            err_resp = {"error": {"message": "empty prompt"}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         stream = req.get("stream", False)
@@ -196,7 +207,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
         try:
             file_refs = _upload_images(images)
         except RuntimeError as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         if stream and (not tools or tool_choice == "none"):
@@ -215,7 +228,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 }
                 self.wfile.write(f"data: {json.dumps(first_chunk)}\n\n".encode())
                 self.wfile.flush()
+                full_text = ""
                 for delta in generate_stream(prompt, model_id, think_mode, file_refs, extra_fields):
+                    full_text += delta
                     chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                              "model": model_name, "choices": [{"index": 0, "delta": {"content": delta}, "finish_reason": None}]}
                     self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
@@ -225,16 +240,28 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps(end)}\n\n".encode())
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
+                self._audit(model_name, req, {
+                    "id": cid,
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": model_name,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": full_text}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(full_text)//4,
+                              "total_tokens": (len(prompt)+len(full_text))//4},
+                })
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as e:
                 log(f"Stream error: {e}")
+                self._audit(model_name, req, {"error": {"message": str(e)}})
             return
 
         try:
             text = generate(prompt, model_id, think_mode, file_refs, extra_fields)
         except Exception as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         tool_calls = None
@@ -252,26 +279,37 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
+            self._audit(model_name, req, {
+                "id": cid, "object": "chat.completion", "created": int(time.time()),
+                "model": model_name,
+                "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
+            })
         else:
-            self.send_json({
+            resp = {
                 "id": cid, "object": "chat.completion", "created": int(time.time()),
                 "model": model_name,
                 "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
                 "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text or "")//4,
                           "total_tokens": (len(prompt)+len(text or ""))//4},
-            })
+            }
+            self.send_json(resp)
+            self._audit(model_name, req, resp)
 
     # ─── /v1/responses (Codex CLI) ───────────────────────────────────────────
 
     def _handle_responses(self, body: bytes):
         req = self._parse_body(body)
         if req is None:
-            self.send_json({"error": {"message": "invalid JSON"}}, 400)
+            err = {"error": {"message": "invalid JSON"}}
+            self.send_json(err, 400)
+            self._audit("-", body, err)
             return
         model_name, model_id, think_mode, err, extra_fields = resolve_model(
             req.get("model", CONFIG["default_model"]))
         if err:
-            self.send_json({"error": {"message": err}}, 400)
+            err_resp = {"error": {"message": err}}
+            self.send_json(err_resp, 400)
+            self._audit(req.get("model", "-"), req, err_resp)
             return
 
         input_items = req.get("input", [])
@@ -320,14 +358,18 @@ class GeminiHandler(BaseHTTPRequestHandler):
         tool_choice = req.get("tool_choice", "auto")
         prompt, images = messages_to_prompt(messages, tools, tool_choice)
         if not prompt.strip():
-            self.send_json({"error": {"message": "empty input"}}, 400)
+            err_resp = {"error": {"message": "empty input"}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         try:
             file_refs = _upload_images(images)
             text = generate(prompt, model_id, think_mode, file_refs, extra_fields)
         except Exception as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         tool_calls = None
@@ -470,33 +512,41 @@ class GeminiHandler(BaseHTTPRequestHandler):
                         output_index=output_index,
                         item=item,
                     )
+            final_resp = {
+                **base_response,
+                "status": "completed",
+                "output": output,
+                "usage": usage,
+            }
             emit(
                 "response.completed",
-                response={
-                    **base_response,
-                    "status": "completed",
-                    "output": output,
-                    "usage": usage,
-                },
+                response=final_resp,
             )
             self.wfile.flush()
+            self._audit(model_name, req, final_resp)
         else:
-            self.send_json({"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
-                            "model": model_name, "output": output,
-                            "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4, "total_tokens": (len(prompt)+len(text or ""))//4}})
+            resp = {"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
+                    "model": model_name, "output": output,
+                    "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4, "total_tokens": (len(prompt)+len(text or ""))//4}}
+            self.send_json(resp)
+            self._audit(model_name, req, resp)
 
     # ─── /v1beta/models (Google Gemini CLI) ──────────────────────────────────
 
     def _handle_google_generate(self, body: bytes, stream: bool):
         req = self._parse_body(body)
         if req is None:
-            self.send_json({"error": {"message": "invalid JSON"}}, 400)
+            err = {"error": {"message": "invalid JSON"}}
+            self.send_json(err, 400)
+            self._audit("-", body, err)
             return
         m = re.match(r'/v1beta/models/([^:?]+)', self.path)
         model_name = m.group(1) if m else CONFIG["default_model"]
         model_name, model_id, think_mode, err, extra_fields = resolve_model(model_name)
         if err:
-            self.send_json({"error": {"message": err}}, 400)
+            err_resp = {"error": {"message": err}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         tool_config = req.get("toolConfig", {})
@@ -504,13 +554,17 @@ class GeminiHandler(BaseHTTPRequestHandler):
         has_tools = bool(req.get("tools")) and fc_mode != "NONE"
         prompt, images = google_contents_to_prompt(req)
         if not prompt.strip():
-            self.send_json({"error": {"message": "empty content"}}, 400)
+            err_resp = {"error": {"message": "empty content"}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         try:
             file_refs = _upload_images(images)
         except RuntimeError as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
         log(f"Google API: model={model_name} stream={stream} tools={has_tools} prompt_len={len(prompt)}")
 
@@ -539,16 +593,24 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 }
                 self.wfile.write(f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode())
                 self.wfile.flush()
+                self._audit(model_name, req, {
+                    "candidates": [{"content": {"parts": [{"text": full_text}], "role": "model"}, "finishReason": "STOP", "index": 0}],
+                    "usageMetadata": final_chunk["usageMetadata"],
+                    "modelVersion": model_name,
+                })
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as e:
                 log(f"Google stream error: {e}")
+                self._audit(model_name, req, {"error": {"message": str(e)}})
             return
 
         try:
             text = generate(prompt, model_id, think_mode, file_refs, extra_fields)
         except Exception as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         if not text:
@@ -587,8 +649,10 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self._start_sse()
             self.wfile.write(f"data: {json.dumps(response_obj, ensure_ascii=False)}\n\n".encode())
             self.wfile.flush()
+            self._audit(model_name, req, response_obj)
         else:
             self.send_json(response_obj)
+            self._audit(model_name, req, response_obj)
 
 
 class ThreadedServer(ThreadingMixIn, HTTPServer):

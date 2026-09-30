@@ -34,6 +34,8 @@ import argparse
 import base64
 import binascii
 import tempfile
+import threading
+from datetime import datetime
 from typing import Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -63,6 +65,7 @@ DEFAULT_CONFIG = {
     "proxy": None,
     "api_keys": [],
     "temporary_chats": False,
+    "audit_log": False,
 }
 
 CONFIG = dict(DEFAULT_CONFIG)
@@ -120,6 +123,73 @@ def log(msg: str):
     if CONFIG["log_requests"]:
         sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
         sys.stderr.flush()
+
+
+_audit_lock = threading.Lock()
+
+
+def get_audit_log_path(log_dir: str = None, dt: datetime = None) -> str:
+    """Return the audit log file path for the given date (default today)."""
+    if not log_dir:
+        log_dir = CONFIG.get("audit_log_dir", "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    if dt is None:
+        dt = datetime.now()
+    date_str = dt.strftime("%Y-%m-%d")
+    return os.path.join(log_dir, f"audit_{date_str}.log")
+
+
+def record_audit_log(
+    client_ip: str,
+    model: str,
+    request_data,
+    response_data,
+    log_dir: str = None,
+) -> bool:
+    """Record an audit log entry containing client_ip, model, request, and response.
+
+    Rotates daily into audit_YYYY-MM-DD.log.
+    Returns True if logged, False if audit logging is disabled or on error.
+    """
+    if not CONFIG.get("audit_log", False):
+        return False
+
+    # Normalize request_data
+    if isinstance(request_data, bytes):
+        try:
+            request_data = json.loads(request_data.decode("utf-8"))
+        except Exception:
+            request_data = request_data.decode("utf-8", errors="replace")
+
+    # Normalize response_data
+    if isinstance(response_data, bytes):
+        try:
+            response_data = json.loads(response_data.decode("utf-8"))
+        except Exception:
+            response_data = response_data.decode("utf-8", errors="replace")
+
+    now = datetime.now()
+    entry = {
+        "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "client_ip": client_ip or "-",
+        "model": model or "-",
+        "request": request_data,
+        "response": response_data,
+    }
+
+    try:
+        log_path = get_audit_log_path(log_dir, now)
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with _audit_lock:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+        return True
+    except Exception as e:
+        if CONFIG.get("log_requests", True):
+            sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] Audit log error: {e}\n")
+            sys.stderr.flush()
+        return False
 
 
 def load_cookie() -> tuple:
@@ -652,6 +722,16 @@ class GeminiHandler(BaseHTTPRequestHandler):
         client_ip = self.client_address[0] if self.client_address else "-"
         log(f"{client_ip} {fmt % args}")
 
+    def _audit(self, model: str, request_data: any, response_data: any):
+        client_ip = self.client_address[0] if self.client_address else "-"
+        record_audit_log(client_ip, model, request_data, response_data)
+
+    def _parse_body(self, body: bytes):
+        try:
+            return json.loads(body)
+        except Exception:
+            return None
+
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
@@ -780,17 +860,26 @@ class GeminiHandler(BaseHTTPRequestHandler):
         return text or "", tool_calls
 
     def handle_chat(self, body: bytes):
-        req = json.loads(body)
+        req = self._parse_body(body)
+        if req is None:
+            err = {"error": {"message": "invalid JSON"}}
+            self.send_json(err, 400)
+            self._audit("-", body, err)
+            return
         model_name, model_id, think_mode, err = self._resolve_model(
             req.get("model", CONFIG["default_model"]))
         if err:
-            self.send_json({"error": {"message": err}}, 400)
+            err_resp = {"error": {"message": err}}
+            self.send_json(err_resp, 400)
+            self._audit(req.get("model", "-"), req, err_resp)
             return
 
         tools = req.get("tools")
         prompt, images = messages_to_prompt(req.get("messages", []), tools)
         if not prompt.strip():
-            self.send_json({"error": {"message": "empty prompt"}}, 400)
+            err_resp = {"error": {"message": "empty prompt"}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         stream = req.get("stream", False)
@@ -798,7 +887,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
         try:
             file_refs = upload_images(images)
         except RuntimeError as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         if stream and not tools:
@@ -812,7 +903,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 first_chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                                "model": model_name, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
                 self.wfile.write(f"data: {json.dumps(first_chunk)}\n\n".encode())
+                full_text = ""
                 for delta_text in gemini_stream_generate_iter(prompt, model_id, think_mode, file_refs):
+                    full_text += delta_text
                     chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
                              "model": model_name, "choices": [{"index": 0, "delta": {"content": delta_text}, "finish_reason": None}]}
                     self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
@@ -823,17 +916,29 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
+                self._audit(model_name, req, {
+                    "id": cid,
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": model_name,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": full_text}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(full_text)//4,
+                              "total_tokens": (len(prompt)+len(full_text))//4},
+                })
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception as e:
                 log(f"Stream error: {e}")
+                self._audit(model_name, req, {"error": {"message": str(e)}})
             return
 
         # Non-streaming (or tool calling which needs full response)
         try:
             text, tool_calls = self._call_gemini(prompt, model_id, think_mode, tools, file_refs)
         except Exception as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         msg = {"role": "assistant", "content": text or None}
@@ -853,22 +958,36 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
-        else:
-            self.send_json({
+            self._audit(model_name, req, {
                 "id": cid, "object": "chat.completion", "created": int(time.time()),
                 "model": model_name,
                 "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
-                "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text)//4,
-                          "total_tokens": (len(prompt)+len(text))//4},
             })
+        else:
+            resp = {
+                "id": cid, "object": "chat.completion", "created": int(time.time()),
+                "model": model_name,
+                "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
+                "usage": {"prompt_tokens": len(prompt)//4, "completion_tokens": len(text or "")//4,
+                          "total_tokens": (len(prompt)+len(text or ""))//4},
+            }
+            self.send_json(resp)
+            self._audit(model_name, req, resp)
 
     def handle_responses(self, body: bytes):
         """OpenAI Responses API for Codex CLI compatibility."""
-        req = json.loads(body)
+        req = self._parse_body(body)
+        if req is None:
+            err = {"error": {"message": "invalid JSON"}}
+            self.send_json(err, 400)
+            self._audit("-", body, err)
+            return
         model_name, model_id, think_mode, err = self._resolve_model(
             req.get("model", CONFIG["default_model"]))
         if err:
-            self.send_json({"error": {"message": err}}, 400)
+            err_resp = {"error": {"message": err}}
+            self.send_json(err_resp, 400)
+            self._audit(req.get("model", "-"), req, err_resp)
             return
 
         input_items = req.get("input", [])
@@ -915,14 +1034,18 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         prompt, images = messages_to_prompt(messages, tools)
         if not prompt.strip():
-            self.send_json({"error": {"message": "empty input"}}, 400)
+            err_resp = {"error": {"message": "empty input"}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         try:
             file_refs = upload_images(images)
             text, tool_calls = self._call_gemini(prompt, model_id, think_mode, tools, file_refs)
         except Exception as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         rid = f"resp_{uuid.uuid4().hex[:16]}"
@@ -971,12 +1094,16 @@ class GeminiHandler(BaseHTTPRequestHandler):
                         emit("response.output_text.done", item_id=item["id"], output_index=oi, content_index=ci, text=cp["text"])
                         emit("response.content_part.done", item_id=item["id"], output_index=oi, content_index=ci, part=cp)
                     emit("response.output_item.done", output_index=oi, item=item)
-            emit("response.completed", response={**base_resp, "status": "completed", "output": output, "usage": usage})
+            final_resp = {**base_resp, "status": "completed", "output": output, "usage": usage}
+            emit("response.completed", response=final_resp)
             self.wfile.flush()
+            self._audit(model_name, req, final_resp)
         else:
-            self.send_json({"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
-                            "model": model_name, "output": output,
-                            "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text)//4, "total_tokens": (len(prompt)+len(text))//4}})
+            resp = {"id": rid, "object": "response", "created_at": int(time.time()), "status": "completed",
+                    "model": model_name, "output": output,
+                    "usage": {"input_tokens": len(prompt)//4, "output_tokens": len(text or "")//4, "total_tokens": (len(prompt)+len(text or ""))//4}}
+            self.send_json(resp)
+            self._audit(model_name, req, resp)
 
 
     # ─── Google Native API (Gemini CLI compatible) ────────────────────────────
@@ -1002,27 +1129,40 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def _handle_google_generate(self, body: bytes, stream: bool):
         """Handle Google native generateContent / streamGenerateContent."""
-        req = json.loads(body)
+        req = self._parse_body(body)
+        if req is None:
+            err = {"error": {"message": "invalid JSON"}}
+            self.send_json(err, 400)
+            self._audit("-", body, err)
+            return
         model_name = self._parse_google_model_from_path()
         if not model_name:
-            self.send_json({"error": {"message": "model not specified in path"}}, 400)
+            err_resp = {"error": {"message": "model not specified in path"}}
+            self.send_json(err_resp, 400)
+            self._audit("-", req, err_resp)
             return
 
         model_name, model_id, think_mode, err = self._resolve_model(model_name)
         if err:
-            self.send_json({"error": {"message": err}}, 400)
+            err_resp = {"error": {"message": err}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         prompt, images = google_contents_to_prompt(req)
         if not prompt.strip():
-            self.send_json({"error": {"message": "empty content"}}, 400)
+            err_resp = {"error": {"message": "empty content"}}
+            self.send_json(err_resp, 400)
+            self._audit(model_name, req, err_resp)
             return
 
         try:
             file_refs = upload_images(images)
             text, _ = self._call_gemini(prompt, model_id, think_mode, None, file_refs)
         except Exception as e:
-            self.send_json({"error": {"message": f"upstream error: {e}"}}, 502)
+            err_resp = {"error": {"message": f"upstream error: {e}"}}
+            self.send_json(err_resp, 502)
+            self._audit(model_name, req, err_resp)
             return
 
         candidate = {
@@ -1032,8 +1172,8 @@ class GeminiHandler(BaseHTTPRequestHandler):
         }
         usage = {
             "promptTokenCount": len(prompt) // 4,
-            "candidatesTokenCount": len(text) // 4,
-            "totalTokenCount": (len(prompt) + len(text)) // 4,
+            "candidatesTokenCount": len(text or "") // 4,
+            "totalTokenCount": (len(prompt) + len(text or "")) // 4,
         }
         response_obj = {
             "candidates": [candidate],
@@ -1047,10 +1187,12 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(f"data: {json.dumps(response_obj)}\n\n".encode())
+            self.wfile.write(f"data: {json.dumps(response_obj, ensure_ascii=False)}\n\n".encode())
             self.wfile.flush()
+            self._audit(model_name, req, response_obj)
         else:
             self.send_json(response_obj)
+            self._audit(model_name, req, response_obj)
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
@@ -1196,6 +1338,7 @@ def main():
     print(f"  Retry:     {CONFIG['retry_attempts']}x / {CONFIG['retry_delay_sec']}s")
     print(f"  BL:        {CONFIG['gemini_bl']}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")
+    print(f"  Audit log: {'enabled' if CONFIG.get('audit_log', False) else 'disabled'}")
     print()
     try:
         server.serve_forever()
