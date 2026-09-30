@@ -6,7 +6,9 @@ import unittest
 from unittest import mock
 from urllib.parse import parse_qs
 
-from gemini_web2api.config import CONFIG, DEFAULT_CONFIG
+import tempfile
+import os
+from gemini_web2api.config import CONFIG, DEFAULT_CONFIG, load_config, sync_cookie_auth_to_config
 from gemini_web2api.gemini import _build_payload
 from gemini_web2api.server import GeminiHandler, ThreadedServer
 from gemini_web2api.tools import google_contents_to_prompt, messages_to_prompt
@@ -439,6 +441,99 @@ class StreamingEndpointTests(unittest.TestCase):
         self.assertEqual(events[3][1]["delta"], '{"city":"Shanghai"}')
         self.assertEqual(events[4][1]["arguments"], '{"city":"Shanghai"}')
         self.assertEqual(events[-1][1]["response"]["output"][0]["name"], "get_weather")
+
+
+class CookieAuthSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.original_config = dict(CONFIG)
+        self.temp_dir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        CONFIG.clear()
+        CONFIG.update(self.original_config)
+        self.temp_dir.cleanup()
+
+    def test_syncs_auth_keys_from_cookie_file_to_config_and_loads(self):
+        cookie_path = os.path.join(self.temp_dir.name, "gemini-auth.json")
+        config_path = os.path.join(self.temp_dir.name, "config.json")
+
+        with open(cookie_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "cookie": "test_cookie",
+                "sapisid": "test_sapisid",
+                "gemini_bl": "new_bl_from_cookie_2026",
+                "auth_user": "2",
+                "xsrf_token": "new_xsrf_token_from_cookie",
+            }, f)
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "gemini_bl": "old_bl",
+                "auth_user": "0",
+                "xsrf_token": "old_xsrf",
+                "cookie_file": cookie_path,
+            }, f)
+
+        # Sync cookie auth to config
+        updated = sync_cookie_auth_to_config(config_path)
+        self.assertTrue(updated)
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            saved_config = json.load(f)
+
+        self.assertEqual(saved_config["gemini_bl"], "new_bl_from_cookie_2026")
+        self.assertEqual(saved_config["auth_user"], "2")
+        self.assertEqual(saved_config["xsrf_token"], "new_xsrf_token_from_cookie")
+
+        # Then run existing load_config
+        load_config(config_path)
+        self.assertEqual(CONFIG["gemini_bl"], "new_bl_from_cookie_2026")
+        self.assertEqual(CONFIG["auth_user"], "2")
+        self.assertEqual(CONFIG["xsrf_token"], "new_xsrf_token_from_cookie")
+
+    def test_sync_noop_when_values_already_match(self):
+        cookie_path = os.path.join(self.temp_dir.name, "gemini-auth.json")
+        config_path = os.path.join(self.temp_dir.name, "config.json")
+
+        data = {
+            "gemini_bl": "same_bl",
+            "auth_user": "1",
+            "xsrf_token": "same_xsrf",
+        }
+
+        with open(cookie_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump({**data, "cookie_file": cookie_path}, f)
+
+        updated = sync_cookie_auth_to_config(config_path)
+        self.assertFalse(updated)
+
+    def test_sync_with_explicit_cookie_file_argument(self):
+        cookie_path = os.path.join(self.temp_dir.name, "custom-auth.json")
+        config_path = os.path.join(self.temp_dir.name, "config.json")
+
+        with open(cookie_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "gemini_bl": "custom_bl",
+                "auth_user": 3,
+                "xsrf_token": "custom_xsrf",
+            }, f)
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump({"cookie_file": "old.json"}, f)
+
+        updated = sync_cookie_auth_to_config(config_path, cookie_file=cookie_path)
+        self.assertTrue(updated)
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            saved_config = json.load(f)
+
+        self.assertEqual(saved_config["gemini_bl"], "custom_bl")
+        self.assertEqual(saved_config["auth_user"], "3")
+        self.assertEqual(saved_config["xsrf_token"], "custom_xsrf")
+        self.assertEqual(saved_config["cookie_file"], cookie_path)
 
 
 if __name__ == "__main__":
