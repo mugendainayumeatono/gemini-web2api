@@ -873,5 +873,38 @@ class RateLimiterTests(unittest.TestCase):
         self.assertAlmostEqual(standalone.calculate_interval(0.5, False), 2.0)
 
 
+class ModelResolutionTests(unittest.TestCase):
+    def test_gemini_4_argon_in_modular_models(self):
+        from gemini_web2api.models import MODELS, resolve_model
+
+        self.assertIn("gemini-4-argon", MODELS)
+        self.assertEqual(MODELS["gemini-4-argon"]["mode"], 1)
+        self.assertEqual(MODELS["gemini-4-argon"]["think"], 4)
+
+        self.assertIn("gemini-4-argon-high", MODELS)
+        self.assertEqual(MODELS["gemini-4-argon-high"]["mode"], 2)
+        self.assertEqual(MODELS["gemini-4-argon-high"]["think"], 0)
+
+        name, mode_id, think_mode, err, extra = resolve_model("gemini-4-argon")
+        self.assertEqual((name, mode_id, think_mode, err, extra), ("gemini-4-argon", 1, 4, None, None))
+
+        name_h, mode_h, think_h, err_h, extra_h = resolve_model("gemini-4-argon-high")
+        self.assertEqual((name_h, mode_h, think_h, err_h, extra_h), ("gemini-4-argon-high", 2, 0, None, None))
+
+    def test_gemini_4_argon_in_standalone_models(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("standalone_models", "gemini_web2api.py")
+        standalone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(standalone)
+
+        self.assertIn("gemini-4-argon", standalone.MODELS)
+        self.assertEqual(standalone.MODELS["gemini-4-argon"]["mode"], 1)
+        self.assertEqual(standalone.MODELS["gemini-4-argon"]["think"], 4)
+
+        self.assertIn("gemini-4-argon-high", standalone.MODELS)
+        self.assertEqual(standalone.MODELS["gemini-4-argon-high"]["mode"], 2)
+        self.assertEqual(standalone.MODELS["gemini-4-argon-high"]["think"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

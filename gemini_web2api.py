@@ -78,9 +78,17 @@ CONFIG = dict(DEFAULT_CONFIG)
 #   1=FAST, 2=THINKING, 3=PRO, 4=AUTO, 5=FAST_DYNAMIC_THINKING, 6=FLASH_LITE
 
 MODELS = {
+    "gemini-4-argon": {
+        "mode": 1, "think": 4,
+        "desc": "Latest all-around model (Gemini 4 Argon)",
+    },
+    "gemini-4-argon-high": {
+        "mode": 2, "think": 0,
+        "desc": "Gemini 4 Argon with deep thinking mode (High)",
+    },
     "gemini-3.8-flash": {
         "mode": 1, "think": 4,
-        "desc": "Latest all-around model (Gemini 3.8 Flash)",
+        "desc": "All-around model (Gemini 3.8 Flash)",
     },
     "gemini-3.8-flash-high": {
         "mode": 2, "think": 0,

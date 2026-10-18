@@ -88,7 +88,12 @@ Supports Google native API endpoints:
 
 | Model | Description | Output |
 |-------|-------------|--------|
-| `gemini-3.6-flash` | All-around model (latest) | ~12k chars |
+| `gemini-4-argon` | All-around model (latest) | ~12k chars |
+| `gemini-4-argon-high` | Gemini 4 Argon with deep thinking mode (High) | **~20k chars** |
+| `gemini-3.8-flash` | All-around model (Gemini 3.8 Flash) | ~12k chars |
+| `gemini-3.8-flash-high` | Gemini 3.8 Flash with deep thinking mode (High) | **~20k chars** |
+| `gemini-3.7-flash` | All-around model (Gemini 3.7 Flash) | ~12k chars |
+| `gemini-3.6-flash` | All-around model (Gemini 3.6 Flash) | ~12k chars |
 | `gemini-3.5-flash` | Alias for gemini-3.6-flash | ~12k chars |
 | `gemini-3.5-flash-thinking` | Extended thinking, longest output | **~20k chars** |
 | `gemini-3.5-flash-thinking-lite` | Adaptive thinking depth | ~15k chars |

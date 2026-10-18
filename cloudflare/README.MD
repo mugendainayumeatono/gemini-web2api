@@ -269,7 +269,12 @@ SAPISID = "sapisid_1| sapisid_2| sapisid_3"
 
 | 模型 ID | 类型 | 说明 |
 |---------|------|------|
-| `gemini-3.6-flash` | FAST | 最新全能模型 |
+| `gemini-4-argon` | FAST | 最新全能模型 (Gemini 4 Argon) |
+| `gemini-4-argon-high` | THINKING | Gemini 4 Argon 深度思考模式 (High) |
+| `gemini-3.8-flash` | FAST | 全能模型 (Gemini 3.8 Flash) |
+| `gemini-3.8-flash-high` | THINKING | Gemini 3.8 Flash 深度思考模式 (High) |
+| `gemini-3.7-flash` | FAST | 全能模型 (Gemini 3.7 Flash) |
+| `gemini-3.6-flash` | FAST | 全能模型 (Gemini 3.6 Flash) |
 | `gemini-3.5-flash` | FAST | 3.6 Flash 的别名 |
 | `gemini-3.5-flash-thinking` | THINKING | 深度思考模式 |
 | `gemini-3.1-pro` | PRO | 专业版（需 Cookie） |

@@ -440,10 +440,35 @@ function getRandomSecChUaPlatform() {
 //   4 = AUTO（自动选择思考深度，由 Gemini 决定）
 
 var MODELS = {
+  'gemini-4-argon': {
+    mode: 1,        // FAST - 快速模式
+    think: 4,       // AUTO - 自动选择思考深度
+    desc: 'Latest all-around model (Gemini 4 Argon)',
+  },
+  'gemini-4-argon-high': {
+    mode: 2,        // THINKING - 深度思考模式
+    think: 0,       // 启用深度思考
+    desc: 'Gemini 4 Argon with deep thinking mode (High)',
+  },
+  'gemini-3.8-flash': {
+    mode: 1,        // FAST - 快速模式
+    think: 4,       // AUTO - 自动选择思考深度
+    desc: 'All-around model (Gemini 3.8 Flash)',
+  },
+  'gemini-3.8-flash-high': {
+    mode: 2,        // THINKING - 深度思考模式
+    think: 0,       // 启用深度思考
+    desc: 'Gemini 3.8 Flash with deep thinking mode (High)',
+  },
+  'gemini-3.7-flash': {
+    mode: 1,        // FAST
+    think: 4,       // AUTO
+    desc: 'All-around model (Gemini 3.7 Flash)',
+  },
   'gemini-3.6-flash': {
     mode: 1,        // FAST - 快速模式
     think: 4,       // AUTO - 自动选择思考深度
-    desc: 'Latest all-around model (Gemini 3.6 Flash)',
+    desc: 'All-around model (Gemini 3.6 Flash)',
   },
   'gemini-3.5-flash': {
     mode: 1,        // FAST
