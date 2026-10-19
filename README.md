@@ -201,7 +201,7 @@ Or use Docker Compose:
 
 ```bash
 cp gemini_web2api/config.example.json gemini_web2api/config.json
-docker compose up -d
+docker compose -f docker-compose.local.yml up -d
 ```
 
 To mount a cookie file:

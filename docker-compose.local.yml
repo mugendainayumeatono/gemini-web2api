@@ -6,4 +6,8 @@ services:
       - "8081:8081"
     volumes:
       - ./gemini_web2api/config.json:/app/gemini_web2api/config.json
+      # 若使用 Cookie 认证（如 Gemini Advanced / Pro 模型），取消下行注释挂载认证文件：
+      # - ./gemini_web2api/gemini-auth.json:/app/gemini_web2api/gemini-auth.json
+      # 可选：挂载审计日志目录以实现数据持久化：
+      # - ./logs:/app/logs
     restart: unless-stopped

@@ -191,7 +191,7 @@ docker run -d --name gemini-web2api -p 8081:8081 -v ./gemini_web2api/config.json
 
 ```bash
 cp gemini_web2api/config.example.json gemini_web2api/config.json
-docker compose up -d
+docker compose -f docker-compose.local.yml up -d
 ```
 
 如需挂载 Cookie 文件:

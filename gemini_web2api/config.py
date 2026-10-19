@@ -103,7 +103,16 @@ def sync_cookie_auth_to_config(config_path: str, cookie_file: str = None) -> boo
             except Exception:
                 pass
 
-            os.replace(temp_file.name, config_path)
+            try:
+                os.replace(temp_file.name, config_path)
+            except OSError:
+                # Docker single-file bind mount: os.replace() fails with EBUSY. Overwrite directly.
+                with open(temp_file.name, "r", encoding="utf-8") as src, open(config_path, "w", encoding="utf-8") as dst:
+                    dst.write(src.read())
+                try:
+                    os.remove(temp_file.name)
+                except OSError:
+                    pass
             print(f"[config] Synced auth parameters (gemini_bl, auth_user, xsrf_token) from {target_cookie_file} to {config_path}")
             return True
         except Exception:
