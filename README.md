@@ -25,7 +25,7 @@ Convert Google Gemini's web interface into an OpenAI-compatible API. Zero cost, 
 
 ```bash
 pip install httpx
-python gemini_web2api.py
+python gemini_web2api/main.py
 ```
 
 Server starts at `http://localhost:8081/v1`.
@@ -116,7 +116,7 @@ gemini-3.5-flash-thinking@think=4   # shallowest
 Anonymous access works for all models, but `gemini-3.1-pro` routes to Flash without authentication. To get real Pro routing, you need a **Gemini Advanced (paid subscription)** account cookie:
 
 ```bash
-python gemini_web2api.py --cookie-file cookie.txt
+python gemini_web2api/main.py --cookie-file cookie.txt
 ```
 
 ### How to get cookies
@@ -220,7 +220,7 @@ If you cannot access `gemini.google.com` directly (connection timeout), configur
 
 **Method 1: CLI argument**
 ```bash
-python gemini_web2api.py --proxy http://127.0.0.1:7890
+python gemini_web2api/main.py --proxy http://127.0.0.1:7890
 ```
 
 **Method 2: config.json**
@@ -231,7 +231,7 @@ python gemini_web2api.py --proxy http://127.0.0.1:7890
 **Method 3: Environment variable** (auto-detected)
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7890
-python gemini_web2api.py
+python gemini_web2api/main.py
 ```
 
 Works with Clash, V2Ray, Shadowsocks, or any HTTP proxy.

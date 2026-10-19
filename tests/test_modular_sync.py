@@ -744,29 +744,6 @@ class AuditSystemTests(unittest.TestCase):
 
         self.assertEqual(len(lines), num_threads * writes_per_thread)
 
-    def test_standalone_parity_for_audit(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("standalone", "gemini_web2api.py")
-        standalone = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(standalone)
-
-        self.assertIn("audit_log", standalone.DEFAULT_CONFIG)
-        self.assertIs(standalone.DEFAULT_CONFIG["audit_log"], False)
-        self.assertTrue(callable(getattr(standalone, "record_audit_log", None)))
-        self.assertTrue(callable(getattr(standalone, "get_audit_log_path", None)))
-
-        standalone.CONFIG["audit_log"] = True
-        logged = standalone.record_audit_log(
-            "127.0.0.1",
-            "gemini-3.8-flash",
-            {"msg": "hi"},
-            {"reply": "hello"},
-            self.temp_dir.name,
-        )
-        self.assertTrue(logged)
-        files = os.listdir(self.temp_dir.name)
-        self.assertTrue(len(files) >= 1)
-
 
 class RateLimiterTests(unittest.TestCase):
     def setUp(self):
@@ -854,24 +831,6 @@ class RateLimiterTests(unittest.TestCase):
         self.assertTrue(any(w == 0.0 for w in waits))
         self.assertTrue(any(w > 0.0 for w in waits))
 
-    def test_standalone_parity_for_rate_limiter(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("standalone_rate", "gemini_web2api.py")
-        standalone = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(standalone)
-
-        self.assertIn("rate_limit", standalone.DEFAULT_CONFIG)
-        self.assertIsNone(standalone.DEFAULT_CONFIG["rate_limit"])
-        self.assertIn("rate_limit_jitter", standalone.DEFAULT_CONFIG)
-        self.assertIs(standalone.DEFAULT_CONFIG["rate_limit_jitter"], False)
-        self.assertTrue(callable(getattr(standalone, "calculate_interval", None)))
-        self.assertTrue(hasattr(standalone, "RateLimiter"))
-        self.assertTrue(hasattr(standalone, "rate_limiter"))
-
-        # Test standalone rate calculation
-        self.assertAlmostEqual(standalone.calculate_interval(2.0, False), 0.5)
-        self.assertAlmostEqual(standalone.calculate_interval(0.5, False), 2.0)
-
 
 class ModelResolutionTests(unittest.TestCase):
     def test_gemini_4_argon_in_modular_models(self):
@@ -891,19 +850,38 @@ class ModelResolutionTests(unittest.TestCase):
         name_h, mode_h, think_h, err_h, extra_h = resolve_model("gemini-4-argon-high")
         self.assertEqual((name_h, mode_h, think_h, err_h, extra_h), ("gemini-4-argon-high", 2, 0, None, None))
 
-    def test_gemini_4_argon_in_standalone_models(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("standalone_models", "gemini_web2api.py")
-        standalone = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(standalone)
+class MainEntrypointTests(unittest.TestCase):
+    def test_import_main_entrypoint(self):
+        from gemini_web2api.main import main
+        from gemini_web2api.__main__ import main as dunder_main
+        from gemini_web2api import main as main_module
 
-        self.assertIn("gemini-4-argon", standalone.MODELS)
-        self.assertEqual(standalone.MODELS["gemini-4-argon"]["mode"], 1)
-        self.assertEqual(standalone.MODELS["gemini-4-argon"]["think"], 4)
+        self.assertTrue(callable(main))
+        self.assertIs(main, dunder_main)
+        self.assertIs(main, main_module.main)
 
-        self.assertIn("gemini-4-argon-high", standalone.MODELS)
-        self.assertEqual(standalone.MODELS["gemini-4-argon-high"]["mode"], 2)
-        self.assertEqual(standalone.MODELS["gemini-4-argon-high"]["think"], 0)
+    def test_main_cli_version(self):
+        import subprocess
+        import sys
+
+        cmd = [sys.executable, "gemini_web2api/main.py", "--version"]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("gemini-web2api", res.stdout + res.stderr)
+
+    def test_module_main_cli_version(self):
+        import subprocess
+        import sys
+
+        cmd = [sys.executable, "-m", "gemini_web2api.main", "--version"]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("gemini-web2api", res.stdout + res.stderr)
+
+        cmd2 = [sys.executable, "-m", "gemini_web2api", "--version"]
+        res2 = subprocess.run(cmd2, capture_output=True, text=True)
+        self.assertEqual(res2.returncode, 0)
+        self.assertIn("gemini-web2api", res2.stdout + res2.stderr)
 
 
 if __name__ == "__main__":

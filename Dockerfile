@@ -7,4 +7,4 @@ COPY gemini_web2api/ ./gemini_web2api/
 COPY config.example.json ./config.json
 EXPOSE 8081
 
-CMD ["python", "-m", "gemini_web2api", "--config", "/app/config.json"]
+CMD ["python", "gemini_web2api/main.py", "--config", "/app/config.json"]

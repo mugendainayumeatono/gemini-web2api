@@ -25,7 +25,7 @@
 
 ```bash
 pip install httpx
-python gemini_web2api.py
+python gemini_web2api/main.py
 ```
 
 服务启动在 `http://localhost:8081/v1`.
@@ -106,7 +106,7 @@ gemini-3.5-flash-thinking@think=4   # 最浅
 匿名访问对所有模型有效, 但 `gemini-3.1-pro` 在无认证时会路由到 Flash. 要获得真正的 Pro 路由, 需要 **Gemini Advanced (付费订阅)** 账号的 cookie:
 
 ```bash
-python gemini_web2api.py --cookie-file cookie.txt
+python gemini_web2api/main.py --cookie-file cookie.txt
 ```
 
 ### 如何获取 Cookie
@@ -210,7 +210,7 @@ docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.js
 
 **方式 1: 命令行参数**
 ```bash
-python gemini_web2api.py --proxy http://127.0.0.1:7890
+python gemini_web2api/main.py --proxy http://127.0.0.1:7890
 ```
 
 **方式 2: config.json**
@@ -221,7 +221,7 @@ python gemini_web2api.py --proxy http://127.0.0.1:7890
 **方式 3: 环境变量** (自动检测)
 ```bash
 set HTTPS_PROXY=http://127.0.0.1:7890
-python gemini_web2api.py
+python gemini_web2api/main.py
 ```
 
 支持 Clash, V2Ray, Shadowsocks 等任何 HTTP 代理.

@@ -12,7 +12,7 @@ streaming = ["httpx>=0.25"]
 test = ["pytest>=7.0"]
 
 [project.scripts]
-gemini-web2api = "gemini_web2api.__main__:main"
+gemini-web2api = "gemini_web2api.main:main"
 
 [build-system]
 requires = ["setuptools>=68"]

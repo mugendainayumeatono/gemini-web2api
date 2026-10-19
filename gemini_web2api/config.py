@@ -124,7 +124,8 @@ def load_config(path: str = None):
 
 def find_config():
     """Search for config file in standard locations."""
-    for p in ["./config.json", os.path.expanduser("~/.config/gemini-web2api/config.json")]:
+    root_config = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
+    for p in ["./config.json", root_config, os.path.expanduser("~/.config/gemini-web2api/config.json")]:
         if os.path.exists(p):
             return p
     return None
