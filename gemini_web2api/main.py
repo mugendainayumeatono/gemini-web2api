@@ -11,13 +11,13 @@ if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
 try:
-    from .config import CONFIG, load_config, find_config, sync_cookie_auth_to_config
+    from .config import CONFIG, load_config, find_config, sync_cookie_auth_to_config, resolve_cookie_file
     from .models import MODELS
     from .gemini import HAS_HTTPX
     from .server import GeminiHandler, ThreadedServer
     from . import __version__
 except (ImportError, ValueError):
-    from gemini_web2api.config import CONFIG, load_config, find_config, sync_cookie_auth_to_config
+    from gemini_web2api.config import CONFIG, load_config, find_config, sync_cookie_auth_to_config, resolve_cookie_file
     from gemini_web2api.models import MODELS
     from gemini_web2api.gemini import HAS_HTTPX
     from gemini_web2api.server import GeminiHandler, ThreadedServer
@@ -51,7 +51,8 @@ def main():
     print(f"  Listening: http://0.0.0.0:{port}")
     print(f"  Base URL:  http://localhost:{port}/v1")
     print(f"  Models:    {', '.join(MODELS.keys())}")
-    print(f"  Cookie:    {'yes' if CONFIG.get('cookie_file') else 'none (anonymous)'}")
+    resolved_cookie = resolve_cookie_file(CONFIG.get("cookie_file"))
+    print(f"  Cookie:    {'yes' if resolved_cookie and os.path.exists(resolved_cookie) else 'none (anonymous)'}")
     print(f"  Proxy:     {CONFIG.get('proxy') or 'system env'}")
     print(f"  Streaming: {'httpx (true streaming)' if HAS_HTTPX else 'urllib (buffered)'}")
     print(f"  Temporary: {'yes' if CONFIG.get('temporary_chats', False) else 'no'}")

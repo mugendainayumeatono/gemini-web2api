@@ -5,5 +5,5 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - ./config.json:/app/config.json
+      - ./gemini_web2api/config.json:/app/gemini_web2api/config.json
     restart: unless-stopped

@@ -6,4 +6,5 @@ __pycache__
 config.json
 cookie.txt
 cookie.json
+gemini-auth.json
 .env

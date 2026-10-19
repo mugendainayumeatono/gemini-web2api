@@ -182,22 +182,22 @@ Pro 路由需要 **Gemini Advanced** (付费订阅). 免费 Google 账号的 coo
 ## Docker 部署
 
 ```bash
-cp config.example.json config.json
+cp gemini_web2api/config.example.json gemini_web2api/config.json
 docker build -t gemini-web2api .
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json gemini-web2api
+docker run -d --name gemini-web2api -p 8081:8081 -v ./gemini_web2api/config.json:/app/gemini_web2api/config.json gemini-web2api
 ```
 
 或使用 Docker Compose:
 
 ```bash
-cp config.example.json config.json
+cp gemini_web2api/config.example.json gemini_web2api/config.json
 docker compose up -d
 ```
 
 如需挂载 Cookie 文件:
 
 ```bash
-docker run -d --name gemini-web2api -p 8081:8081 -v ./config.json:/app/config.json -v ./cookie.txt:/app/cookie.txt gemini-web2api
+docker run -d --name gemini-web2api -p 8081:8081 -v ./gemini_web2api/config.json:/app/gemini_web2api/config.json -v ./cookie.txt:/app/cookie.txt gemini-web2api
 ```
 
 此时 `config.json` 中设置 `"cookie_file": "/app/cookie.txt"`.

@@ -28,6 +28,29 @@ CONFIG = dict(DEFAULT_CONFIG)
 AUTH_SYNC_KEYS = ("gemini_bl", "auth_user", "xsrf_token")
 
 
+def resolve_cookie_file(cookie_file: str = None) -> str:
+    """Resolve cookie file path considering relative paths to config or package dir."""
+    target = cookie_file or CONFIG.get("cookie_file")
+    if not target:
+        return None
+    if os.path.isabs(target) and os.path.exists(target):
+        return target
+    if os.path.exists(target):
+        return target
+    # Check relative to config_path if loaded
+    config_path = CONFIG.get("config_path")
+    if config_path:
+        cand = os.path.join(os.path.dirname(config_path), target)
+        if os.path.exists(cand):
+            return cand
+    # Check relative to package directory
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    cand_pkg = os.path.join(pkg_dir, target)
+    if os.path.exists(cand_pkg):
+        return cand_pkg
+    return target
+
+
 def sync_cookie_auth_to_config(config_path: str, cookie_file: str = None) -> bool:
     """Sync auth parameters (gemini_bl, auth_user, xsrf_token) from cookie_file into config.json.
 
@@ -52,8 +75,12 @@ def sync_cookie_auth_to_config(config_path: str, cookie_file: str = None) -> boo
     if not os.path.isabs(target_cookie_file):
         if not os.path.exists(target_cookie_file):
             candidate = os.path.join(os.path.dirname(config_path), target_cookie_file)
+            pkg_dir = os.path.dirname(os.path.abspath(__file__))
+            pkg_candidate = os.path.join(pkg_dir, target_cookie_file)
             if os.path.exists(candidate):
                 target_cookie_file = candidate
+            elif os.path.exists(pkg_candidate):
+                target_cookie_file = pkg_candidate
             else:
                 return False
     elif not os.path.exists(target_cookie_file):
@@ -119,13 +146,15 @@ def load_config(path: str = None):
     if path and os.path.exists(path):
         with open(path) as f:
             CONFIG.update(json.load(f))
+        CONFIG["config_path"] = os.path.abspath(path)
     return CONFIG
 
 
 def find_config():
     """Search for config file in standard locations."""
+    pkg_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
     root_config = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")
-    for p in ["./config.json", root_config, os.path.expanduser("~/.config/gemini-web2api/config.json")]:
+    for p in [pkg_config, "./gemini_web2api/config.json", "./config.json", root_config, os.path.expanduser("~/.config/gemini-web2api/config.json")]:
         if os.path.exists(p):
             return p
     return None

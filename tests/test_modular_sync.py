@@ -876,6 +876,19 @@ class MainEntrypointTests(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
         self.assertIn("gemini-web2api", res.stdout + res.stderr)
 
+    def test_find_config_locates_package_config(self):
+        from gemini_web2api.config import find_config
+        cfg = find_config()
+        self.assertIsNotNone(cfg)
+        self.assertTrue(os.path.exists(cfg))
+        self.assertTrue(cfg.endswith("config.json"))
+
+    def test_resolve_cookie_file(self):
+        from gemini_web2api.config import resolve_cookie_file
+        resolved = resolve_cookie_file("gemini-auth.json")
+        self.assertIsNotNone(resolved)
+        self.assertTrue(os.path.isabs(resolved) or os.path.exists(resolved))
+
 
 if __name__ == "__main__":
     unittest.main()
