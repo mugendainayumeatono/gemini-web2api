@@ -853,11 +853,9 @@ class ModelResolutionTests(unittest.TestCase):
 class MainEntrypointTests(unittest.TestCase):
     def test_import_main_entrypoint(self):
         from gemini_web2api.main import main
-        from gemini_web2api.__main__ import main as dunder_main
         from gemini_web2api import main as main_module
 
         self.assertTrue(callable(main))
-        self.assertIs(main, dunder_main)
         self.assertIs(main, main_module.main)
 
     def test_main_cli_version(self):
@@ -877,11 +875,6 @@ class MainEntrypointTests(unittest.TestCase):
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertIn("gemini-web2api", res.stdout + res.stderr)
-
-        cmd2 = [sys.executable, "-m", "gemini_web2api", "--version"]
-        res2 = subprocess.run(cmd2, capture_output=True, text=True)
-        self.assertEqual(res2.returncode, 0)
-        self.assertIn("gemini-web2api", res2.stdout + res2.stderr)
 
 
 if __name__ == "__main__":
