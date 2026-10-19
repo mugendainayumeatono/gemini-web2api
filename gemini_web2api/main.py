@@ -51,7 +51,7 @@ def main():
     print(f"  Listening: http://0.0.0.0:{port}")
     print(f"  Base URL:  http://localhost:{port}/v1")
     print(f"  Models:    {', '.join(MODELS.keys())}")
-    resolved_cookie = resolve_cookie_file(CONFIG.get("cookie_file"))
+    resolved_cookie = resolve_cookie_file()
     print(f"  Cookie:    {'yes' if resolved_cookie and os.path.exists(resolved_cookie) else 'none (anonymous)'}")
     print(f"  Proxy:     {CONFIG.get('proxy') or 'system env'}")
     print(f"  Streaming: {'httpx (true streaming)' if HAS_HTTPX else 'urllib (buffered)'}")
