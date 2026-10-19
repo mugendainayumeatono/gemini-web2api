@@ -36,51 +36,25 @@ Session and XSRF are ready for export.
 
 ## Apply it in `gemini-web2api`
 
-Move the exported file into the project:
+Move the exported file into `gemini_web2api`:
 
 ```bash
 cd /path/to/gemini-web2api
 
 WIN_HOME=$(wslpath "$(powershell.exe -NoProfile -Command '[Environment]::GetFolderPath(\"UserProfile\")' | tr -d '\r')")
-cp "$WIN_HOME/Downloads/gemini-auth.json" ./gemini-auth.json
-chmod 600 gemini-auth.json
+cp "$WIN_HOME/Downloads/gemini-auth.json" ./gemini_web2api/gemini-auth.json
+chmod 600 ./gemini_web2api/gemini-auth.json
 ```
 
-Update `config.json`:
+Ensure `gemini_web2api/config.json` sets `"cookie_file"`:
 
-```bash
-cd /path/to/gemini-web2api
-
-AUTH_FILE="$(pwd)/gemini-auth.json"
-tmp=$(mktemp)
-
-jq \
-  --arg auth_file "$AUTH_FILE" \
-  --slurpfile auth "$AUTH_FILE" \
-  '
-    .cookie_file = $auth_file
-    | .auth_user = $auth[0].auth_user
-    | .xsrf_token = $auth[0].xsrf_token
-    | if (($auth[0].gemini_bl // "") | length) > 0
-      then .gemini_bl = $auth[0].gemini_bl
-      else .
-      end
-  ' config.json > "$tmp" &&
-mv "$tmp" config.json
-
-chmod 600 config.json
+```json
+{
+  "cookie_file": "gemini-auth.json"
+}
 ```
 
-Quick check:
-
-```bash
-jq '{
-  cookie_file,
-  auth_user,
-  xsrf_token_set: ((.xsrf_token // "") | length > 0),
-  gemini_bl_set: ((.gemini_bl // "") | length > 0)
-}' config.json
-```
+The server reads `cookie`, `sapisid`, `auth_user`, `xsrf_token`, and `gemini_bl` directly from `gemini-auth.json` (with automatic mtime-based hot-reloading).
 
 ## Restart and test
 

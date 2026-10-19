@@ -10,8 +10,8 @@ from urllib.parse import parse_qs
 import tempfile
 import os
 from datetime import datetime
-from gemini_web2api.config import CONFIG, DEFAULT_CONFIG, load_config, sync_cookie_auth_to_config
-from gemini_web2api.gemini import _build_payload
+from gemini_web2api.config import CONFIG, DEFAULT_CONFIG, load_config
+from gemini_web2api.gemini import _build_payload, _build_headers, _get_url, DEFAULT_GEMINI_BL
 from gemini_web2api.server import GeminiHandler, ThreadedServer
 from gemini_web2api.tools import google_contents_to_prompt, messages_to_prompt
 from gemini_web2api.audit import get_audit_log_path, record_audit_log
@@ -565,10 +565,13 @@ class CookieAuthSyncTests(unittest.TestCase):
         CONFIG.update(self.original_config)
         self.temp_dir.cleanup()
 
-    def test_syncs_auth_keys_from_cookie_file_to_config_and_loads(self):
-        cookie_path = os.path.join(self.temp_dir.name, "gemini-auth.json")
-        config_path = os.path.join(self.temp_dir.name, "config.json")
+    def test_auth_params_not_in_default_config(self):
+        self.assertNotIn("gemini_bl", DEFAULT_CONFIG)
+        self.assertNotIn("auth_user", DEFAULT_CONFIG)
+        self.assertNotIn("xsrf_token", DEFAULT_CONFIG)
 
+    def test_loads_auth_params_directly_from_cookie_file(self):
+        cookie_path = os.path.join(self.temp_dir.name, "gemini-auth.json")
         with open(cookie_path, "w", encoding="utf-8") as f:
             json.dump({
                 "cookie": "test_cookie",
@@ -578,74 +581,35 @@ class CookieAuthSyncTests(unittest.TestCase):
                 "xsrf_token": "new_xsrf_token_from_cookie",
             }, f)
 
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "gemini_bl": "old_bl",
-                "auth_user": "0",
-                "xsrf_token": "old_xsrf",
-                "cookie_file": cookie_path,
-            }, f)
+        CONFIG["cookie_file"] = cookie_path
 
-        # Sync cookie auth to config
-        updated = sync_cookie_auth_to_config(config_path)
-        self.assertTrue(updated)
+        url = _get_url()
+        self.assertIn("https://gemini.google.com/u/2/_/BardChatUi/data/", url)
+        self.assertIn("?bl=new_bl_from_cookie_2026&", url)
 
-        with open(config_path, "r", encoding="utf-8") as f:
-            saved_config = json.load(f)
+        headers = _build_headers()
+        self.assertEqual(headers.get("X-Goog-AuthUser"), "2")
+        self.assertEqual(headers.get("Referer"), "https://gemini.google.com/u/2/app")
+        self.assertEqual(headers.get("Cookie"), "test_cookie")
 
-        self.assertEqual(saved_config["gemini_bl"], "new_bl_from_cookie_2026")
-        self.assertEqual(saved_config["auth_user"], "2")
-        self.assertEqual(saved_config["xsrf_token"], "new_xsrf_token_from_cookie")
+        payload = _build_payload("hello", 1, 4)
+        parsed = parse_qs(payload)
+        self.assertEqual(parsed.get("at"), ["new_xsrf_token_from_cookie"])
 
-        # Then run existing load_config
-        load_config(config_path)
-        self.assertEqual(CONFIG["gemini_bl"], "new_bl_from_cookie_2026")
-        self.assertEqual(CONFIG["auth_user"], "2")
-        self.assertEqual(CONFIG["xsrf_token"], "new_xsrf_token_from_cookie")
+    def test_falls_back_to_defaults_when_no_cookie_file(self):
+        CONFIG["cookie_file"] = None
 
-    def test_sync_noop_when_values_already_match(self):
-        cookie_path = os.path.join(self.temp_dir.name, "gemini-auth.json")
-        config_path = os.path.join(self.temp_dir.name, "config.json")
+        url = _get_url()
+        self.assertIn("https://gemini.google.com/_/BardChatUi/data/", url)
+        self.assertIn(f"?bl={DEFAULT_GEMINI_BL}&", url)
 
-        data = {
-            "gemini_bl": "same_bl",
-            "auth_user": "1",
-            "xsrf_token": "same_xsrf",
-        }
+        headers = _build_headers()
+        self.assertNotIn("X-Goog-AuthUser", headers)
+        self.assertEqual(headers.get("Referer"), "https://gemini.google.com/app")
 
-        with open(cookie_path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump({**data, "cookie_file": cookie_path}, f)
-
-        updated = sync_cookie_auth_to_config(config_path)
-        self.assertFalse(updated)
-
-    def test_sync_with_explicit_cookie_file_argument(self):
-        cookie_path = os.path.join(self.temp_dir.name, "custom-auth.json")
-        config_path = os.path.join(self.temp_dir.name, "config.json")
-
-        with open(cookie_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "gemini_bl": "custom_bl",
-                "auth_user": 3,
-                "xsrf_token": "custom_xsrf",
-            }, f)
-
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump({"cookie_file": "old.json"}, f)
-
-        updated = sync_cookie_auth_to_config(config_path, cookie_file=cookie_path)
-        self.assertTrue(updated)
-
-        with open(config_path, "r", encoding="utf-8") as f:
-            saved_config = json.load(f)
-
-        self.assertEqual(saved_config["gemini_bl"], "custom_bl")
-        self.assertEqual(saved_config["auth_user"], "3")
-        self.assertEqual(saved_config["xsrf_token"], "custom_xsrf")
-        self.assertEqual(saved_config["cookie_file"], cookie_path)
+        payload = _build_payload("hello", 1, 4)
+        parsed = parse_qs(payload)
+        self.assertNotIn("at", parsed)
 
 
 class AuditSystemTests(unittest.TestCase):

@@ -129,32 +129,25 @@ SID=你的SID值; HSID=你的HSID值; SSID=你的SSID值; APISID=你的APISID值
 
 ### 登录账号路径与 XSRF Token
 
-如果已登录的 Gemini 页面 URL 带账号序号, 例如:
-
-```
-https://gemini.google.com/u/1/app/...
-```
-
-请把 `auth_user` 设置为该序号。登录态的 Gemini Web 请求还可能需要页面里的 XSRF token。该 token 在渲染后的 Gemini 页面源码中名为 `SNlM0e`; 在 `config.json` 中填入 `xsrf_token` 后, 服务会把它作为 `at` 表单字段提交。
-
-示例:
+在 Cookie 认证文件（如 `gemini-auth.json`）中包含以下字段，服务会直接读取使用：
 
 ```json
 {
-  "cookie_file": "/app/cookie.txt",
+  "cookie": "...",
+  "sapisid": "...",
   "auth_user": "1",
   "xsrf_token": "AOOh0P...",
   "gemini_bl": "boq_assistant-bard-web-server_YYYYMMDD.xx_p0"
 }
 ```
 
-如果登录态请求返回 HTTP 400 且错误中包含 `xsrf`, 请刷新 Gemini Web 后更新 `xsrf_token`, 并确认 `auth_user` 与浏览器 URL 中的 `/u/<序号>/` 一致.
+如果登录态请求返回 HTTP 400 且错误中包含 `xsrf`, 请刷新 Gemini Web 后重新导出并更新 `gemini-auth.json`.
 
 Pro 路由需要 **Gemini Advanced** (付费订阅). 免费 Google 账号的 cookie 可以登录认证, 但会静默回退到 Flash.
 
 ## 配置文件
 
-在同目录创建 `config.json`:
+在 `gemini_web2api` 目录下创建 `config.json`:
 
 ```json
 {
@@ -163,11 +156,9 @@ Pro 路由需要 **Gemini Advanced** (付费订阅). 免费 Google 账号的 coo
   "retry_attempts": 3,
   "retry_delay_sec": 2,
   "request_timeout_sec": 180,
-  "gemini_bl": "boq_assistant-bard-web-server_20260716.08_p0",
-  "auth_user": null,
-  "xsrf_token": null,
+  "default_model": "gemini-3.8-flash",
   "api_keys": ["sk-your-key"],
-  "cookie_file": null,
+  "cookie_file": "gemini-auth.json",
   "proxy": null,
   "log_requests": true,
   "temporary_chats": false

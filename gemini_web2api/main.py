@@ -11,13 +11,13 @@ if str(parent_dir) not in sys.path:
     sys.path.insert(0, str(parent_dir))
 
 try:
-    from .config import CONFIG, load_config, find_config, sync_cookie_auth_to_config, resolve_cookie_file
+    from .config import CONFIG, load_config, find_config, resolve_cookie_file
     from .models import MODELS
     from .gemini import HAS_HTTPX
     from .server import GeminiHandler, ThreadedServer
     from . import __version__
 except (ImportError, ValueError):
-    from gemini_web2api.config import CONFIG, load_config, find_config, sync_cookie_auth_to_config, resolve_cookie_file
+    from gemini_web2api.config import CONFIG, load_config, find_config, resolve_cookie_file
     from gemini_web2api.models import MODELS
     from gemini_web2api.gemini import HAS_HTTPX
     from gemini_web2api.server import GeminiHandler, ThreadedServer
@@ -35,7 +35,6 @@ def main():
 
     config_path = args.config or os.environ.get("GEMINI_WEB2API_CONFIG") or find_config()
     if config_path:
-        sync_cookie_auth_to_config(config_path, cookie_file=args.cookie_file)
         load_config(config_path)
 
     if args.port:

@@ -1,7 +1,6 @@
 """Configuration management."""
 import json
 import os
-import tempfile
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -11,9 +10,6 @@ DEFAULT_CONFIG = {
     "retry_attempts": 3,
     "retry_delay_sec": 2,
     "request_timeout_sec": 180,
-    "gemini_bl": "boq_assistant-bard-web-server_20260716.08_p0",
-    "auth_user": None,
-    "xsrf_token": None,
     "default_model": "gemini-3.8-flash",
     "log_requests": True,
     "cookie_file": None,
@@ -27,8 +23,6 @@ DEFAULT_CONFIG = {
 
 CONFIG = dict(DEFAULT_CONFIG)
 
-AUTH_SYNC_KEYS = ("gemini_bl", "auth_user", "xsrf_token")
-
 
 def resolve_cookie_file(cookie_file: str = None, base_dir: str = None) -> str:
     """Resolve cookie file path (relative to base_dir or package directory)."""
@@ -39,91 +33,6 @@ def resolve_cookie_file(cookie_file: str = None, base_dir: str = None) -> str:
         return target
     base = base_dir or PACKAGE_DIR
     return os.path.join(base, target)
-
-
-def sync_cookie_auth_to_config(config_path: str, cookie_file: str = None) -> bool:
-    """Sync auth parameters (gemini_bl, auth_user, xsrf_token) from cookie_file into config.json.
-
-    Returns True if config.json was updated, False otherwise.
-    """
-    if not config_path or not os.path.exists(config_path):
-        return False
-
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config_data = json.load(f)
-    except Exception:
-        return False
-
-    if not isinstance(config_data, dict):
-        return False
-
-    config_dir = os.path.dirname(os.path.abspath(config_path))
-    target_cookie_file = resolve_cookie_file(cookie_file or config_data.get("cookie_file"), base_dir=config_dir)
-    if not target_cookie_file or not os.path.exists(target_cookie_file):
-        return False
-
-    try:
-        with open(target_cookie_file, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        if not content.startswith("{"):
-            return False
-        auth_data = json.loads(content)
-    except Exception:
-        return False
-
-    if not isinstance(auth_data, dict):
-        return False
-
-    changed = False
-    for key in AUTH_SYNC_KEYS:
-        val = auth_data.get(key)
-        if val is not None and str(val).strip() != "":
-            val_str = str(val).strip() if key == "auth_user" else str(val)
-            if config_data.get(key) != val_str:
-                config_data[key] = val_str
-                changed = True
-
-    if cookie_file and config_data.get("cookie_file") != cookie_file:
-        config_data["cookie_file"] = cookie_file
-        changed = True
-
-    if changed:
-        try:
-            temp_file = tempfile.NamedTemporaryFile("w", dir=config_dir, delete=False, encoding="utf-8")
-            json.dump(config_data, temp_file, indent=2, ensure_ascii=False)
-            temp_file.write("\n")
-            temp_file.flush()
-            os.fsync(temp_file.fileno())
-            temp_file.close()
-
-            try:
-                orig_mode = os.stat(config_path).st_mode & 0o777
-                os.chmod(temp_file.name, orig_mode)
-            except Exception:
-                pass
-
-            try:
-                os.replace(temp_file.name, config_path)
-            except OSError:
-                # Docker single-file bind mount: os.replace() fails with EBUSY. Overwrite directly.
-                with open(temp_file.name, "r", encoding="utf-8") as src, open(config_path, "w", encoding="utf-8") as dst:
-                    dst.write(src.read())
-                try:
-                    os.remove(temp_file.name)
-                except OSError:
-                    pass
-            print(f"[config] Synced auth parameters (gemini_bl, auth_user, xsrf_token) from {target_cookie_file} to {config_path}")
-            return True
-        except Exception:
-            if "temp_file" in locals() and os.path.exists(temp_file.name):
-                try:
-                    os.remove(temp_file.name)
-                except OSError:
-                    pass
-            return False
-
-    return False
 
 
 def load_config(path: str = None):

@@ -139,32 +139,25 @@ Or use the JSON format:
 
 ### Authenticated account path and XSRF token
 
-If the signed-in Gemini page URL contains an account index, such as:
-
-```
-https://gemini.google.com/u/1/app/...
-```
-
-set `auth_user` to that index. Authenticated web requests may also require the page XSRF token. In the rendered Gemini page source, this token is exposed as `SNlM0e`; pass it as `xsrf_token` in `config.json`. The server sends it as the `at` form field.
-
-Example:
+The Cookie authentication file (e.g., `gemini-auth.json`) contains the following fields, which the server reads directly:
 
 ```json
 {
-  "cookie_file": "/app/cookie.txt",
+  "cookie": "...",
+  "sapisid": "...",
   "auth_user": "1",
   "xsrf_token": "AOOh0P...",
   "gemini_bl": "boq_assistant-bard-web-server_YYYYMMDD.xx_p0"
 }
 ```
 
-If authenticated requests return HTTP 400 with an `xsrf` error, refresh Gemini Web, update `xsrf_token`, and make sure `auth_user` matches the `/u/<index>/` part of the browser URL.
+If authenticated requests return HTTP 400 with an `xsrf` error, refresh Gemini Web and re-export `gemini-auth.json`.
 
 Pro routing requires **Gemini Advanced** (paid subscription). A free Google account cookie will authenticate but silently fall back to Flash.
 
 ## Configuration
 
-Create `config.json` in the same directory:
+Create `config.json` in the `gemini_web2api` directory:
 
 ```json
 {
@@ -173,11 +166,9 @@ Create `config.json` in the same directory:
   "retry_attempts": 3,
   "retry_delay_sec": 2,
   "request_timeout_sec": 180,
-  "gemini_bl": "boq_assistant-bard-web-server_20260716.08_p0",
-  "auth_user": null,
-  "xsrf_token": null,
+  "default_model": "gemini-3.8-flash",
   "api_keys": ["sk-your-key"],
-  "cookie_file": null,
+  "cookie_file": "gemini-auth.json",
   "proxy": null,
   "log_requests": true,
   "temporary_chats": false

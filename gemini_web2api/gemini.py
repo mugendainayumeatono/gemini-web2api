@@ -17,8 +17,18 @@ except ImportError:
 
 from .config import CONFIG, resolve_cookie_file
 
+DEFAULT_GEMINI_BL = "boq_assistant-bard-web-server_20260716.08_p0"
+
 _ssl_ctx = None
-_cookie_cache = {"str": "", "sapisid": None, "mtime": 0}
+_cookie_cache = {
+    "path": None,
+    "str": "",
+    "sapisid": None,
+    "gemini_bl": DEFAULT_GEMINI_BL,
+    "auth_user": None,
+    "xsrf_token": None,
+    "mtime": 0,
+}
 _httpx_client = None
 
 
@@ -46,25 +56,51 @@ def _get_httpx_client():
 
 
 def load_cookie() -> tuple:
-    """Load cookie from file with mtime-based caching."""
+    """Load cookie and auth parameters from file with mtime-based caching."""
     cookie_file = resolve_cookie_file()
     if not cookie_file or not os.path.exists(cookie_file):
+        _cookie_cache.update({
+            "path": None,
+            "str": "",
+            "sapisid": None,
+            "gemini_bl": DEFAULT_GEMINI_BL,
+            "auth_user": None,
+            "xsrf_token": None,
+            "mtime": 0,
+        })
         return "", None
     try:
         mtime = os.path.getmtime(cookie_file)
-        if mtime == _cookie_cache["mtime"] and _cookie_cache["str"]:
+        if cookie_file == _cookie_cache["path"] and mtime == _cookie_cache["mtime"] and _cookie_cache["mtime"] != 0:
             return _cookie_cache["str"], _cookie_cache["sapisid"]
-        with open(cookie_file, "r") as f:
+        with open(cookie_file, "r", encoding="utf-8") as f:
             content = f.read().strip()
         if content.startswith("{"):
             data = json.loads(content)
             cookie_str = data.get("cookie", "")
             sapisid = data.get("sapisid", "")
+            raw_bl = data.get("gemini_bl")
+            gemini_bl = str(raw_bl).strip() if raw_bl is not None and str(raw_bl).strip() != "" else DEFAULT_GEMINI_BL
+            raw_auth = data.get("auth_user")
+            auth_user = str(raw_auth).strip() if raw_auth is not None and str(raw_auth).strip() != "" else None
+            raw_xsrf = data.get("xsrf_token")
+            xsrf_token = str(raw_xsrf).strip() if raw_xsrf is not None and str(raw_xsrf).strip() != "" else None
         else:
             cookie_str = content
             pairs = dict(p.split("=", 1) for p in cookie_str.split("; ") if "=" in p)
             sapisid = pairs.get("SAPISID", "")
-        _cookie_cache.update({"str": cookie_str, "sapisid": sapisid or None, "mtime": mtime})
+            gemini_bl = DEFAULT_GEMINI_BL
+            auth_user = None
+            xsrf_token = None
+        _cookie_cache.update({
+            "path": cookie_file,
+            "str": cookie_str,
+            "sapisid": sapisid or None,
+            "gemini_bl": gemini_bl,
+            "auth_user": auth_user,
+            "xsrf_token": xsrf_token,
+            "mtime": mtime,
+        })
         return cookie_str, sapisid if sapisid else None
     except Exception as e:
         log(f"Cookie load error: {e}")
@@ -79,13 +115,15 @@ def make_sapisidhash(sapisid: str) -> str:
 
 def _account_prefix() -> str:
     """Return the Gemini account path prefix for non-default Google accounts."""
-    auth_user = CONFIG.get("auth_user")
+    load_cookie()
+    auth_user = _cookie_cache.get("auth_user")
     if auth_user is None or auth_user == "":
         return ""
     return f"/u/{auth_user}"
 
 
 def _build_headers() -> dict:
+    cookie_str, sapisid = load_cookie()
     account_prefix = _account_prefix()
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -95,8 +133,7 @@ def _build_headers() -> dict:
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     }
     if account_prefix:
-        headers["X-Goog-AuthUser"] = str(CONFIG["auth_user"])
-    cookie_str, sapisid = load_cookie()
+        headers["X-Goog-AuthUser"] = str(_cookie_cache["auth_user"])
     if cookie_str:
         headers["Cookie"] = cookie_str
     if sapisid:
@@ -115,6 +152,7 @@ def _apply_chat_persistence_flags(inner: list) -> None:
 
 
 def _build_payload(prompt: str, model_id: int, think_mode: int, file_refs: list = None, extra_fields: dict = None) -> str:
+    load_cookie()
     inner = [None] * 102
     if file_refs:
         refs = [[None, None, ref] for ref in file_refs]
@@ -142,18 +180,21 @@ def _build_payload(prompt: str, model_id: int, think_mode: int, file_refs: list 
             inner[k] = v
     outer = [None, json.dumps(inner)]
     params = {"f.req": json.dumps(outer)}
-    if CONFIG.get("xsrf_token"):
-        params["at"] = CONFIG["xsrf_token"]
+    xsrf_token = _cookie_cache.get("xsrf_token")
+    if xsrf_token:
+        params["at"] = xsrf_token
     return urllib.parse.urlencode(params)
 
 
 def _get_url() -> str:
+    load_cookie()
     reqid = int(time.time()) % 1000000
     account_prefix = _account_prefix()
+    gemini_bl = _cookie_cache.get("gemini_bl") or DEFAULT_GEMINI_BL
     return (
         f"https://gemini.google.com{account_prefix}/_/BardChatUi/data/"
         "assistant.lamda.BardFrontendService/StreamGenerate"
-        f"?bl={CONFIG['gemini_bl']}&hl=en&_reqid={reqid}&rt=c"
+        f"?bl={gemini_bl}&hl=en&_reqid={reqid}&rt=c"
     )
 
 
